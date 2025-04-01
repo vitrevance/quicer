@@ -8,8 +8,10 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math/rand"
 	"net"
 	"os"
+	"time"
 
 	"github.com/babolivier/go-doh-client"
 	"github.com/quic-go/quic-go"
@@ -79,7 +81,7 @@ func main() {
 }
 
 func Dial(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config) (quic.EarlyConnection, error) {
-	domain, port, err := net.SplitHostPort(addr)
+	domain, _, err := net.SplitHostPort(addr)
 	if err != nil {
 		return nil, fmt.Errorf("invalid address format: %v", err)
 	}
@@ -89,7 +91,7 @@ func Dial(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config
 		Host:  "dns.google",
 		Class: doh.IN,
 	}
-	aRecords, _, err := resolver.LookupAAAA(domain)
+	aRecords, _, err := resolver.LookupA(domain)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve domain %s: %v", domain, err)
 	}
@@ -100,7 +102,7 @@ func Dial(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config
 
 	// Use first resolved IP address
 	dnsResp := ""
-	switch ip := (any)(aRecords[0]).(type) {
+	switch ip := (any)(aRecords[rand.Intn(len(aRecords))]).(type) {
 	case *doh.ARecord:
 		dnsResp = ip.IP4
 	case *doh.AAAARecord:
@@ -111,15 +113,29 @@ func Dial(ctx context.Context, addr string, tlsCfg *tls.Config, cfg *quic.Config
 		return nil, fmt.Errorf("invalid IP address: %s", dnsResp)
 	}
 
-	// Reconstruct address with resolved IP
-	resolvedAddr := fmt.Sprintf("%s:%s", ip.String(), port)
+	destination := &net.UDPAddr{
+		IP:   ip,
+		Port: 443,
+	}
 
 	tlsCfg.ServerName = domain
 
 	// Dial using resolved IP address
-	conn, err := quic.DialAddrEarly(ctx, resolvedAddr, tlsCfg, cfg)
+	udpConn, err := net.ListenUDP("udp", nil)
 	if err != nil {
-		return nil, fmt.Errorf("failed to dial QUIC address %s: %v", resolvedAddr, err)
+		return nil, err
+	}
+	for range 50 {
+		_, err = udpConn.WriteToUDP([]byte("kaglskgflakisdbf;likbdl;ifbalskjbf;asdugfiausdbgfjuhbvsludyfbovsih"), destination)
+		if err != nil {
+			log.Fatalf("Failed to test UDP connection: %v\n", err)
+		}
+	}
+	time.Sleep(time.Millisecond * 300)
+	transport := &quic.Transport{Conn: udpConn}
+	conn, err := transport.DialEarly(ctx, destination, tlsCfg, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dial QUIC address %s: %v", destination.String(), err)
 	}
 	return conn, nil
 }
